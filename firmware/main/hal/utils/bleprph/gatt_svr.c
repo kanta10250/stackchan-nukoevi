@@ -225,13 +225,15 @@ static int stackchan_svc_access(uint16_t conn_handle, uint16_t attr_handle, stru
                 rc = gatt_svr_write(ctxt->om, 0, STACKCHAN_MAX_JSON_LEN, stackchan_config_data, &stackchan_config_len);
                 if (rc == 0) {
                     stackchan_config_data[stackchan_config_len] = '\0';
-                    MODLOG_DFLT(INFO, "Config data received (%d bytes): %s", stackchan_config_len,
-                                stackchan_config_data);
+                    MODLOG_DFLT(INFO, "Config data received (%d bytes)", stackchan_config_len);
 
                     /* Call user callback if registered */
                     if (g_stackchan_callbacks.config_cb) {
                         g_stackchan_callbacks.config_cb(stackchan_config_data, stackchan_config_len, conn_handle);
                     }
+                    // Wi-Fi credentials must never be readable as the last GATT value.
+                    memset(stackchan_config_data, 0, stackchan_config_len);
+                    stackchan_config_len = 0;
                 }
                 return rc;
             } else if (attr_handle == stackchan_rgb_handle) {
@@ -327,13 +329,19 @@ int gatt_svr_init(bool use_alt_uuid)
     int rc;
 
     /* Allocate buffers in PSRAM */
-    stackchan_motion_data = (char *)heap_caps_malloc(STACKCHAN_MAX_JSON_LEN, MALLOC_CAP_SPIRAM);
-    stackchan_avatar_data = (char *)heap_caps_malloc(STACKCHAN_MAX_JSON_LEN, MALLOC_CAP_SPIRAM);
-    stackchan_config_data = (char *)heap_caps_malloc(STACKCHAN_MAX_JSON_LEN, MALLOC_CAP_SPIRAM);
-    stackchan_rgb_data    = (char *)heap_caps_malloc(STACKCHAN_MAX_JSON_LEN, MALLOC_CAP_SPIRAM);
+    // Writes accept MAX bytes, then append a NUL terminator at index MAX.
+    stackchan_motion_data = (char *)heap_caps_calloc(STACKCHAN_MAX_JSON_LEN + 1, 1, MALLOC_CAP_SPIRAM);
+    stackchan_avatar_data = (char *)heap_caps_calloc(STACKCHAN_MAX_JSON_LEN + 1, 1, MALLOC_CAP_SPIRAM);
+    stackchan_config_data = (char *)heap_caps_calloc(STACKCHAN_MAX_JSON_LEN + 1, 1, MALLOC_CAP_SPIRAM);
+    stackchan_rgb_data    = (char *)heap_caps_calloc(STACKCHAN_MAX_JSON_LEN + 1, 1, MALLOC_CAP_SPIRAM);
 
     if (!stackchan_motion_data || !stackchan_avatar_data || !stackchan_config_data || !stackchan_rgb_data) {
         MODLOG_DFLT(ERROR, "Failed to allocate memory for Stack-Chan characteristics\n");
+        heap_caps_free(stackchan_motion_data);
+        heap_caps_free(stackchan_avatar_data);
+        heap_caps_free(stackchan_config_data);
+        heap_caps_free(stackchan_rgb_data);
+        stackchan_motion_data = stackchan_avatar_data = stackchan_config_data = stackchan_rgb_data = NULL;
         return BLE_HS_ENOMEM;
     }
 

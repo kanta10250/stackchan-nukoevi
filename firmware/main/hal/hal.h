@@ -13,6 +13,7 @@
 #include <uitk/short_namespace.hpp>
 #include <smooth_lvgl.hpp>
 #include <array>
+#include "utils/wifi_connect/provisioning_window.h"
 #include <lvgl_image.h>
 #include <string_view>
 #include <freertos/FreeRTOS.h>
@@ -226,7 +227,12 @@ public:
     void startBleServer();
     bool isBleConnected();
     bool notifyBleConfig(std::string_view json);
-    void startAppConfigServer();
+    bool startAppConfigServer();
+    void setWifiProvisioningActive(bool active) {
+        if (active) _wifi_provisioning_window.Open(millis());
+        else _wifi_provisioning_window.Close();
+    }
+    bool isWifiProvisioningActive() { return _wifi_provisioning_window.Allows(millis()); }
     bool isAppConfiged();
     void resetAppConfiged();
 
@@ -306,6 +312,7 @@ public:
     uint8_t getSpeakerVolume();
 
 private:
+    ProvisioningWindow _wifi_provisioning_window;
     bool _xiaozhi_start_requested = false;
     bool _xiaozhi_background_started = false;
     bool _xiaozhi_listen_requested = false;
@@ -315,7 +322,7 @@ private:
     void startXiaozhiListeningWhenReady();
     void lvgl_init();
     void xiaozhi_mcp_init();
-    void ble_init(bool useAltUuid);
+    bool ble_init(bool useAltUuid);
     void servo_init();
     void head_touch_init();
     void io_expander_init();

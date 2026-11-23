@@ -11,6 +11,8 @@
 #include <mooncake.h>
 #include <settings.h>
 #include <esp_mac.h>
+#include <wifi_manager.h>
+#include <cstring>
 
 static const std::string_view _tag = "HAL-BLE";
 
@@ -48,7 +50,7 @@ static uint8_t _handle_ble_battery_read(void)
     return 96;
 }
 
-void Hal::ble_init(bool useAltUuid)
+bool Hal::ble_init(bool useAltUuid)
 {
     mclog::tagInfo(_tag, "init");
 
@@ -61,12 +63,16 @@ void Hal::ble_init(bool useAltUuid)
     };
     stackchan_ble_register_callbacks(&ble_callbacks);
 
-    ble_prph_init(useAltUuid);
+    if (!ble_prph_init(useAltUuid)) {
+        mclog::tagError(_tag, "BLE initialization failed; setup server was not started");
+        return false;
+    }
 
     uint8_t mac[6];
     esp_read_mac(mac, ESP_MAC_EFUSE_FACTORY);
     mclog::tagInfo(_tag, "init done, factory mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}", mac[0], mac[1], mac[2],
                    mac[3], mac[4], mac[5]);
+    return true;
 }
 
 void Hal::startBleServer()
@@ -100,9 +106,14 @@ bool Hal::notifyBleConfig(std::string_view json)
 
 class WifiConfigServer {
 public:
+    ~WifiConfigServer()
+    {
+        GetHAL().onBleConfigData.disconnect(_config_signal_id);
+    }
+
     void init()
     {
-        GetHAL().onBleConfigData.connect([this](const char* data) { on_config_data(data); });
+        _config_signal_id = GetHAL().onBleConfigData.connect([this](const char* data) { on_config_data(data); });
         _was_connected = stackchan_ble_is_connected();
 
         // Setup WifiStation callbacks
@@ -128,11 +139,15 @@ public:
             GetHAL().onAppConfigEvent.emit(AppConfigEvent::WifiConnectFailed);
         });
 
-        _wifi_station->Start();
+        if (!_wifi_station->Start()) {
+            mclog::tagError(_tag, "shared Wi-Fi manager unavailable");
+        }
     }
 
     void update()
     {
+        // Deliver Wi-Fi notifications on this worker, not the ESP event task.
+        _wifi_station->Update();
         bool is_connected = stackchan_ble_is_connected();
         if (is_connected != _was_connected) {
             _was_connected = is_connected;
@@ -168,15 +183,27 @@ private:
     bool _was_connected = false;
     std::atomic<bool> _is_wifi_connecting{false};
     std::unique_ptr<StackChanWifiStation> _wifi_station;
+    size_t _config_signal_id = 0;
 
     void on_config_data(const char* json_data)
     {
+        if (!GetHAL().isWifiProvisioningActive() || !json_data || std::strlen(json_data) > 2048) {
+            mclog::tagWarn(_tag, "BLE configuration exceeds input limit");
+            return;
+        }
         std::lock_guard<std::mutex> lock(_mutex);
+        if (_msg_queue.size() >= 8) {
+            mclog::tagWarn(_tag, "BLE configuration queue is full");
+            return;
+        }
         _msg_queue.push(json_data);
     }
 
     void process_config_data(const char* json_data)
     {
+        if (!GetHAL().isWifiProvisioningActive()) {
+            return;
+        }
         ArduinoJson::JsonDocument doc;
         auto error = ArduinoJson::deserializeJson(doc, json_data);
 
@@ -214,28 +241,30 @@ private:
             return;
         }
 
-        const char* ssid     = data["ssid"];
-        const char* password = data["password"];
+        if (!data["ssid"].is<const char*>() || !data["password"].is<const char*>()) {
+            notify_state(2, "wifiConnectFailed: Invalid credentials");
+            GetHAL().onAppConfigEvent.emit(AppConfigEvent::WifiConnectFailed);
+            return;
+        }
 
-        mclog::tagInfo(_tag, "get wifi config: {} / {}", ssid, password);
+        const std::string ssid = data["ssid"].as<std::string>();
+        const std::string password = data["password"].as<std::string>();
+        mclog::tagInfo(_tag, "received Wi-Fi configuration");
 
         // Notify state: connecting
         notify_state(0, "wifiConnecting");
         GetHAL().onAppConfigEvent.emit(AppConfigEvent::TryWifiConnect);
 
-        connect_wifi(ssid, password);
+        if (!_wifi_station->AddAuth(ssid, password)) {
+            notify_state(2, "wifiConnectFailed: SSID must be 1-31 bytes; password at most 63 bytes");
+            GetHAL().onAppConfigEvent.emit(AppConfigEvent::WifiConnectFailed);
+        }
     }
 
     void handle_handshake(std::string_view data)
     {
         auto token = secret_logic::generate_handshake_token(data);
         notify_state(4, token.c_str());
-    }
-
-    void connect_wifi(const char* ssid, const char* password)
-    {
-        // Save to NVS (compatible with Xiaozhi) and connect
-        _wifi_station->AddAuth(ssid, password);
     }
 
     void notify_state(int type, const char* state)
@@ -278,19 +307,27 @@ private:
     uint32_t _last_tick = 0;
 };
 
-void Hal::startAppConfigServer()
+bool Hal::startAppConfigServer()
 {
+    static bool started = false;
+    if (started) {
+        return true;
+    }
     mclog::tagInfo(_tag, "start app config server");
 
-    ble_init(true);
+    if (!ble_init(true)) {
+        return false;
+    }
 
     mooncake::GetMooncake().extensionManager()->createAbility(std::make_unique<AppConfigServerWorker>());
+    started = true;
+    return true;
 }
 
 bool Hal::isAppConfiged()
 {
     Settings settings("app_config", false);
-    return settings.GetBool("is_configed", false);
+    return settings.GetBool("is_configed", false) || WifiManager::GetInstance().IsConnected();
 }
 
 void Hal::resetAppConfiged()

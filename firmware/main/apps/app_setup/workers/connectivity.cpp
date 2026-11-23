@@ -20,6 +20,7 @@ static std::string _tag = "Setup-Connectivity";
 
 WifiSetupWorker::WifiSetupWorker()
 {
+    GetHAL().setWifiProvisioningActive(true);
     _state       = State::AppDownload;
     _last_state  = State::None;
     _is_first_in = true;
@@ -35,6 +36,7 @@ WifiSetupWorker::WifiSetupWorker()
 
 WifiSetupWorker::~WifiSetupWorker()
 {
+    GetHAL().setWifiProvisioningActive(false);
     GetHAL().onAppConfigEvent.disconnect(_app_config_signal_id);
     GetStackChan().resetAvatar();
 }
@@ -144,10 +146,11 @@ void WifiSetupWorker::update_state()
                 _is_first_in = false;
 
                 // Start app config server
+                GetHAL().onAppConfigEvent.disconnect(_app_config_signal_id);
                 _app_config_signal_id =
                     GetHAL().onAppConfigEvent.connect([this](AppConfigEvent event) { _last_app_config_event = event; });
 
-                GetHAL().startAppConfigServer();
+                const bool config_server_started = GetHAL().startAppConfigServer();
 
                 auto& data = _state_wait_app_connection_data;
 
@@ -174,7 +177,14 @@ void WifiSetupWorker::update_state()
                 data.info->setTextColor(lv_color_hex(0x26206A));
                 data.info->align(LV_ALIGN_BOTTOM_MID, 0, -26);
                 data.info->setTextAlign(LV_TEXT_ALIGN_CENTER);
-                data.info->setText("Look for me in the app\nto start setup.");
+                data.info->setText(config_server_started ? "Look for me in the app\nto start setup."
+                                                        : "Bluetooth failed.\nRestart to retry.");
+
+                if (config_server_started && GetHAL().isBleConnected()) {
+                    // A reused server may already have a client; no new connect
+                    // event will arrive merely because setup was reopened.
+                    _last_app_config_event = AppConfigEvent::AppConnected;
+                }
 
                 auto& avatar = GetStackChan().avatar();
                 avatar.clearDecorators();

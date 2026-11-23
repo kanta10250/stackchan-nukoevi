@@ -636,8 +636,16 @@ void bleprph_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-void ble_prph_init(bool use_alt_uuid)
+bool ble_prph_init(bool use_alt_uuid)
 {
+    static bool initialized = false;
+    if (initialized) {
+        if (s_use_alt_uuid != use_alt_uuid) {
+            ESP_LOGE(tag, "BLE service already running with another UUID; reboot to change services");
+            return false;
+        }
+        return true;
+    }
     s_use_alt_uuid = use_alt_uuid;
     int rc;
     esp_err_t ret;
@@ -653,7 +661,7 @@ void ble_prph_init(bool use_alt_uuid)
     ret = nimble_port_init();
     if (ret != ESP_OK) {
         ESP_LOGE(tag, "Failed to init nimble %d ", ret);
-        return;
+        return false;
     }
     /* Initialize the NimBLE host configuration. */
     ble_hs_cfg.reset_cb          = bleprph_on_reset;
@@ -690,13 +698,21 @@ void ble_prph_init(bool use_alt_uuid)
 
 #if MYNEWT_VAL(BLE_GATTS)
     rc = gatt_svr_init(use_alt_uuid);
-    assert(rc == 0);
+    if (rc != 0) {
+        ESP_LOGE(tag, "Failed to initialize GATT service: %d", rc);
+        nimble_port_deinit();
+        return false;
+    }
 #endif
 
 #if CONFIG_BT_NIMBLE_GAP_SERVICE
     /* Set the default device name. */
     rc = ble_svc_gap_device_name_set("StackChan");
-    assert(rc == 0);
+    if (rc != 0) {
+        ESP_LOGE(tag, "Failed to set BLE device name: %d", rc);
+        nimble_port_deinit();
+        return false;
+    }
 #endif
 
     /* XXX Need to have template for store */
@@ -716,4 +732,6 @@ void ble_prph_init(bool use_alt_uuid)
         cids[i] = 0;
     }
 #endif
+    initialized = true;
+    return true;
 }
