@@ -36,8 +36,8 @@ void Hal::init()
 
     xiaozhi_board_init();
     xiaozhi_mcp_init();
-    head_touch_init();
-    io_expander_init();
+    // head_touch_init();  // CoreS3: no external head touch sensor
+    // io_expander_init();  // CoreS3: no external expansion board
     rtc_init();
     imu_init();
     servo_init();
